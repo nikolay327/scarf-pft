@@ -1,0 +1,39 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE/project settings
+.vscode/
+.idea/
+*.iml
+
+# Misc
+*.log
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Images
+*.png
+
+# trained models
+*.pt
+
+# data
+*.lh5
+
+# Virtual env
+.venv/
+env/
+venv/
+
+# legacy codes
+*_legacy.py

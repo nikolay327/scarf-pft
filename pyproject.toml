@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scarf-pft"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.10"
+
+authors = [
+    { name = "Niko Nanda Putra Nila Lay", email = "nikonandap.lay@tum.de" }
+]
+
+keywords = [
+    "scientific-machine-learning",
+    "neural-ratio-estimation",
+    "contrastive-learning",
+    "uncertainty-quantification",
+    "detector-data",
+    "pytorch"
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Physics"
+]
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "torch",
+    "pyyaml",
+    "lgdo"
+]
+
+[project.optional-dependencies]
+cuda = [
+    "flash-attn"
+]
+
+optim = [
+    "bitsandbytes"
+]
+
+dev = [
+    "pytest",
+    "ruff"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["scarf_pft*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
