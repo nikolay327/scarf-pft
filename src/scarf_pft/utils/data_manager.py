@@ -141,6 +141,9 @@ class FileDB:
         # TODO: different dsp config for each channels
         return self.dataflow_cfg[experiment].tier[tier].proc_chain[detector_type].on(timestamp, system=system)
 
+    def get_meta(self, experiment: str, tier: str, meta_type: str, detector_type: str, timestamp: str):
+        return self.dataflow_cfg[experiment].tier[tier][meta_type][detector_type].on(timestamp)
+
     def lifetime(self, tier: str, files: list[str] | None = None, daq_files: list[str] | None = None):
         if daq_files is None:
             if files is None:
