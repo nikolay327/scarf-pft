@@ -91,8 +91,6 @@ class _ReadTask:
     n_rows: int
     local_slice: slice | None = None
     local_rows: np.ndarray | None = None
-    file_ranges: np.ndarray | None = None
-    output_ranges: np.ndarray | None = None
     gather: np.ndarray | None = None
 
 
@@ -551,7 +549,7 @@ class VirtualLH5Table:
             source = self._get_source(task.file_id)
             for node in leaves:
                 ds = self._get_dataset_from_source(source, node.path)
-                _read_task_into(ds, task, buffers[node.relpath], node.tail_shape)
+                _read_task_into(ds, task, buffers[node.relpath])
 
     def _build_group_node(
         self,
@@ -740,10 +738,9 @@ def _task_for_rows(
     rows: np.ndarray,
     output: slice | np.ndarray,
 ) -> _ReadTask:
-    """Build one file task with unique physical I/O rows."""
+    """Build one file task with sorted unique physical I/O rows."""
     rows = np.asarray(rows, dtype=np.int64)
     n_rows = int(rows.shape[0])
-    output_ranges = _output_ranges(output)
 
     if n_rows == 0:
         return _ReadTask(
@@ -751,7 +748,6 @@ def _task_for_rows(
             output=output,
             n_rows=0,
             local_rows=rows,
-            output_ranges=output_ranges,
         )
 
     if n_rows == 1:
@@ -760,30 +756,28 @@ def _task_for_rows(
             output=output,
             n_rows=1,
             local_slice=slice(int(rows[0]), int(rows[0]) + 1),
-            output_ranges=output_ranges,
         )
 
-    if np.all(rows[1:] > rows[:-1]):
-        if np.all(np.diff(rows) == 1):
+    strictly_increasing = bool(np.all(rows[1:] > rows[:-1]))
+    if strictly_increasing:
+        if int(rows[-1]) - int(rows[0]) + 1 == n_rows:
             return _ReadTask(
                 file_id=file_id,
                 output=output,
                 n_rows=n_rows,
                 local_slice=slice(int(rows[0]), int(rows[-1]) + 1),
-                output_ranges=output_ranges,
             )
         return _ReadTask(
             file_id=file_id,
             output=output,
             n_rows=n_rows,
             local_rows=rows,
-            file_ranges=_rows_to_ranges(rows),
-            output_ranges=output_ranges,
         )
 
     io_rows, gather = np.unique(rows, return_inverse=True)
     gather = gather.astype(np.intp, copy=False)
-    if io_rows.size == 1 or np.all(np.diff(io_rows) == 1):
+
+    if io_rows.size == 1 or int(io_rows[-1]) - int(io_rows[0]) + 1 == io_rows.size:
         return _ReadTask(
             file_id=file_id,
             output=output,
@@ -797,7 +791,6 @@ def _task_for_rows(
         output=output,
         n_rows=n_rows,
         local_rows=io_rows,
-        file_ranges=_rows_to_ranges(io_rows),
         gather=gather,
     )
 
@@ -806,118 +799,29 @@ def _read_task_into(
     ds: h5py.Dataset,
     task: _ReadTask,
     out: np.ndarray,
-    tail_shape: tuple[int, ...],
 ) -> None:
-    """Read one file task into its final output positions."""
+    """Read one file task and restore caller ordering in NumPy."""
     if task.n_rows == 0:
         return
 
-    if task.gather is None:
-        _read_unique_task_into(ds, task, out)
-        return
-
     if task.local_slice is not None:
-        n_unique = task.local_slice.stop - task.local_slice.start
-        block = np.empty((n_unique, *tail_shape), dtype=ds.dtype)
-        ds.read_direct(block, source_sel=np.s_[task.local_slice])
+        if task.gather is None and isinstance(task.output, slice):
+            ds.read_direct(
+                out,
+                source_sel=np.s_[task.local_slice],
+                dest_sel=np.s_[task.output],
+            )
+            return
+        block = ds[task.local_slice]
     else:
         rows = task.local_rows
         assert rows is not None
-        block = np.empty((rows.shape[0], *tail_shape), dtype=ds.dtype)
-        _read_ranges_into(ds, task.file_ranges, block, None)
+        block = ds[rows]
 
-    out[task.output] = block[task.gather]
+    if task.gather is not None:
+        block = block[task.gather]
 
-
-def _read_unique_task_into(
-    ds: h5py.Dataset,
-    task: _ReadTask,
-    out: np.ndarray,
-) -> None:
-    """Read one duplicate-free task directly into the final output buffer."""
-    if task.local_slice is not None and isinstance(task.output, slice):
-        ds.read_direct(out, source_sel=np.s_[task.local_slice], dest_sel=np.s_[task.output])
-        return
-
-    fspace = ds.id.get_space()
-    fspace.select_none()
-    if task.local_slice is not None:
-        _select_row_slice(fspace, task.local_slice)
-    else:
-        _select_row_ranges(fspace, task.file_ranges)
-
-    mspace = h5py.h5s.create_simple(out.shape)
-    mspace.select_none()
-    if isinstance(task.output, slice):
-        _select_row_slice(mspace, task.output)
-    else:
-        _select_row_ranges(mspace, task.output_ranges)
-
-    ds.id.read(mspace, fspace, out)
-
-
-def _read_ranges_into(
-    ds: h5py.Dataset,
-    ranges: np.ndarray | None,
-    out: np.ndarray,
-    output_ranges: np.ndarray | None,
-) -> None:
-    """Read sorted row ranges into a contiguous or selected output buffer."""
-    fspace = ds.id.get_space()
-    fspace.select_none()
-    _select_row_ranges(fspace, ranges)
-
-    mspace = h5py.h5s.create_simple(out.shape)
-    if output_ranges is not None:
-        mspace.select_none()
-        _select_row_ranges(mspace, output_ranges)
-    ds.id.read(mspace, fspace, out)
-
-
-def _rows_to_ranges(rows: np.ndarray) -> np.ndarray:
-    """Convert sorted unique row ids into half-open contiguous ranges."""
-    rows = np.asarray(rows, dtype=np.int64)
-    if rows.size == 0:
-        return np.empty((0, 2), dtype=np.int64)
-    breaks = np.flatnonzero(np.diff(rows) != 1) + 1
-    bounds = np.concatenate((np.array([0]), breaks, np.array([rows.size])))
-    ranges = np.empty((len(bounds) - 1, 2), dtype=np.int64)
-    for i, (a, b) in enumerate(zip(bounds[:-1], bounds[1:], strict=True)):
-        ranges[i, 0] = rows[int(a)]
-        ranges[i, 1] = rows[int(b) - 1] + 1
-    return ranges
-
-
-def _output_ranges(output: slice | np.ndarray) -> np.ndarray | None:
-    """Return half-open output ranges for an indexed destination."""
-    if isinstance(output, slice):
-        return None
-    return _rows_to_ranges(np.asarray(output, dtype=np.int64))
-
-
-def _select_row_slice(space: h5py.h5s.SpaceID, rows: slice) -> None:
-    """Select one contiguous first-axis slice across all trailing dimensions."""
-    start = int(rows.start or 0)
-    stop = int(rows.stop or start)
-    tail = tuple(int(x) for x in space.shape[1:])
-    space.select_hyperslab(
-        (start,) + (0,) * len(tail),
-        (stop - start, *tail),
-        op=h5py.h5s.SELECT_SET,
-    )
-
-
-def _select_row_ranges(space: h5py.h5s.SpaceID, ranges: np.ndarray | None) -> None:
-    """Build one HDF5 selection from sorted half-open row ranges."""
-    assert ranges is not None
-    tail = tuple(int(x) for x in space.shape[1:])
-    for i, (start, stop) in enumerate(ranges):
-        op = h5py.h5s.SELECT_SET if i == 0 else h5py.h5s.SELECT_OR
-        space.select_hyperslab(
-            (int(start),) + (0,) * len(tail),
-            (int(stop - start), *tail),
-            op=op,
-        )
+    out[task.output] = block
 
 
 def _open_h5(
